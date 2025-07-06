@@ -1,21 +1,30 @@
 import os
 import cv2
 import numpy as np
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 from sklearn.svm import SVC
 from sklearn.metrics import classification_report, accuracy_score
 from tqdm import tqdm
 from skimage.feature import hog
+import joblib
 
 # CONFIG
-IMAGE_SIZE = (256, 256)   # Larger size for better HOG features
+IMAGE_SIZE = (128, 128)
 DATA_DIR = "Data/train"
+MAX_IMAGES_PER_CLASS = 3000  # Adjust for memory
 
-MAX_IMAGES_PER_CLASS = 5000  # Adjust based on RAM
+HOG_PARAMS = {
+    "orientations": 12,
+    "pixels_per_cell": (8, 8),
+    "cells_per_block": (2, 2),
+    "block_norm": "L2-Hys",
+    "transform_sqrt": True,
+    "feature_vector": True
+}
 
-# Load images and extract HOG
+# Load images
 def load_images_hog(data_dir, label_name, max_images):
     features = []
     labels = []
@@ -26,15 +35,9 @@ def load_images_hog(data_dir, label_name, max_images):
             img = cv2.imread(img_path)
             img = cv2.resize(img, IMAGE_SIZE)
             img_gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            # HOG descriptor
             hog_feature = hog(
                 img_gray,
-                orientations=9,
-                pixels_per_cell=(8,8),
-                cells_per_block=(2,2),
-                block_norm='L2-Hys',
-                transform_sqrt=True,
-                feature_vector=True
+                **HOG_PARAMS
             )
             features.append(hog_feature)
             labels.append(0 if label_name == "cat" else 1)
@@ -43,38 +46,45 @@ def load_images_hog(data_dir, label_name, max_images):
                 break
     return np.array(features), np.array(labels)
 
-# Load cats
+# Load data
 X_cats, y_cats = load_images_hog(DATA_DIR, "cat", MAX_IMAGES_PER_CLASS)
-# Load dogs
 X_dogs, y_dogs = load_images_hog(DATA_DIR, "dog", MAX_IMAGES_PER_CLASS)
-
-# Combine
 X = np.vstack((X_cats, X_dogs))
 y = np.concatenate((y_cats, y_dogs))
 
-print(f"Loaded {X.shape[0]} samples with feature dimension {X.shape[1]}")
+print(f"Loaded {X.shape[0]} samples with shape {X.shape}")
 
 # Train/test split
 X_train, X_test, y_train, y_test = train_test_split(X, y, stratify=y, test_size=0.2, random_state=42)
 
-# Standardize
+# Scale
 scaler = StandardScaler()
 X_train_scaled = scaler.fit_transform(X_train)
 X_test_scaled = scaler.transform(X_test)
 
-# Optionally reduce dimensionality
-# HOG features are often compact enough, but you can try PCA:
-# pca = PCA(n_components=100)
-# X_train_scaled = pca.fit_transform(X_train_scaled)
-# X_test_scaled = pca.transform(X_test_scaled)
+# PCA
+pca = PCA(n_components=300)
+X_train_pca = pca.fit_transform(X_train_scaled)
+X_test_pca = pca.transform(X_test_scaled)
 
-# Train SVM
-svm = SVC(kernel='linear', C=1.0)
-svm.fit(X_train_scaled, y_train)
+# Grid search
+param_grid = {
+    "C": [1, 10],
+    "gamma": ["scale", 0.0001],
+    "kernel": ["rbf"]
+}
+grid = GridSearchCV(SVC(), param_grid, cv=3, verbose=2)
+grid.fit(X_train_pca, y_train)
 
-# Predict
-y_pred = svm.predict(X_test_scaled)
+print("Best parameters:", grid.best_params_)
 
-# Evaluate
+y_pred = grid.predict(X_test_pca)
 print("Accuracy:", accuracy_score(y_test, y_pred))
 print("Classification Report:\n", classification_report(y_test, y_pred))
+
+# Save models
+os.makedirs("models", exist_ok=True)
+joblib.dump(grid.best_estimator_, "models/svm_model.joblib")
+joblib.dump(scaler, "models/scaler.joblib")
+joblib.dump(pca, "models/pca.joblib")
+print("Models saved in 'models/'")
